@@ -1,261 +1,204 @@
-# 👁️ Windows OS Agent: Vision-Based Autonomous System
+# screen-agent
 
-Windows OS Agent is an experimental autonomous system that uses **local LLM reasoning** and **screen-based visual perception** to control Windows applications as if a human were operating the machine.  
-Unlike traditional automation tools, it does not rely on API endpoints, DOM access, or accessibility trees.
+> ReAct-based autonomous computer agent — screenshot → LLM → action loop.
 
----
-
-## 📑 Table of Contents
-
-- [Features](#-features)
-- [Current Vision Pipeline](#-current-vision-pipeline)
-- [Planned Vision Parser (YOLO Integration)](#-planned-vision-parser-yolo-integration)
-- [Architecture](#-architecture)
-- [Compatibility & Requirements](#-compatibility--requirements)
-- [Installation](#-installation)
-- [Usage](#-usage)
-- [Configuration](#-configuration)
-- [Roadmap](#-roadmap)
-- [License](#-license)
+Powered by **Gemma 3 12B** via **Ollama**. The agent observes the screen, reasons about what to do, and executes mouse/keyboard actions — no DOM access, no accessibility trees, no external APIs.
 
 ---
 
-## ✨ Features
+## How It Works
 
-### **Vision-First Agent Core**
+The agent runs a continuous **Perceive → Reason → Act** loop:
 
-The agent operates by _seeing_ the screen, interpreting what is visible, and acting accordingly.
-
-### **Local LLM Reasoning**
-
-Powered by **Gemma 3 (12B)** via **Ollama**.  
-All reasoning, planning, and action selection is performed locally.
-
-### **Image-Based Decision Making (Current Implementation)**
-
-- The agent captures a **full-screen screenshot**.
-- This screenshot is embedded into the LLM request as:
-
-```json
-"images": ["<base64-encoded-screenshot>"]
+```
+Screenshot → Base64 Encode → LLM (Gemma 3 12B) → JSON Action → Executor → Next Screenshot
 ```
 
-## - The model analyzes the raw image (like a human) and decides:
+1. Captures a full-screen screenshot
+2. Encodes it as Base64 and sends it to the LLM
+3. LLM analyzes the raw image and outputs a structured action (click, type, scroll, etc.)
+4. Executor performs the action via `pyautogui` / `pywinauto`
+5. New screenshot is captured and the loop continues
 
-- where to click
+---
 
-- what to type
+## Architecture
 
-- how to proceed in an automation task> **Status:** This is the _current and only_ active perception pipeline.
+```
+┌─────────────────────────────────────────────────────┐
+│                    User Request                     │
+└────────────────────────┬────────────────────────────┘
+                         │
+                    ┌────▼─────┐
+                    │ Planner  │  (LLM - Gemma 3 12B)
+                    └────┬─────┘
+                         │
+              ┌──────────▼──────────┐
+              │    Vision Layer     │
+              │                     │
+              │  Current:           │
+              │  Raw screenshot     │
+              │                     │
+              │  Planned:           │
+              │  YOLOv11 + OCR      │
+              │  Object ID map      │
+              └──────────┬──────────┘
+                         │
+                    ┌────▼─────┐
+                    │ Executor │  pyautogui / pywinauto
+                    └────┬─────┘
+                         │
+                  ┌──────▼───────┐
+                  │  Windows OS  │
+                  └──────┬───────┘
+                         │ feedback screenshot
+                         └──────────────────────────┐
+                                                    │
+                                               loops back
+```
 
-### **Realtime UI Observation**
+---
 
-## PyQt5 interface shows:
+## Vision Pipeline
 
-- the agent’s reasoning
+### Current: Raw Screenshot
 
-- performed actions
+The active pipeline sends the full screenshot directly to the LLM with no preprocessing:
 
-## 📸 Current Vision Pipeline
+```json
+{
+  "model": "gemma3:12b",
+  "images": ["<base64-encoded-screenshot>"],
+  "prompt": "..."
+}
+```
 
-## At the moment, **there is no active YOLO or OCR parsing**.The LLM receives the **entire screenshot**, and the agent works as:1) Capture screenshot
+The LLM infers UI elements from raw pixels and returns a JSON action:
 
-2. Encode to Base64
+```json
+{ "action": "click", "x": 412, "y": 230 }
+{ "action": "type", "text": "Hello World" }
+```
 
-3. Send inside the LLM message as an `images` field
+Simple, but accuracy is gated entirely on the model's vision capability.
 
-4. LLM infers UI elements directly from raw pixels
+### Planned: YOLOv11 + OCR
 
-5. LLM outputs a JSON action (e.g., click coordinates)This approach works but is **less accurate** and highly dependent on LLM vision capabilities.
+A structured perception layer is in development. The planned flow:
 
-## 🧠 Planned Vision Parser (YOLO Integration)
+1. Screenshot passes through **YOLOv11** — detects UI elements (buttons, inputs, icons, etc.) and assigns each a unique ID
+2. **OCR** optionally extracts visible text with bounding boxes
+3. YOLOv11 overlays IDs on the screenshot
+4. LLM receives the annotated screenshot and references elements by ID
+5. Executor maps the ID → exact bounding box → performs the action
 
-## The Vision Parser is designed but **not implemented yet**.
-
-## Planned Workflow
-
-Currently, the model receives the full screenshot via Ollama's message interface and makes decisions based on that image.
-
-YOLOv11 integration is under development. The planned workflow is as follows:
-
-1. Screenshot is sent through YOLOv11.
-2. YOLO detects UI elements on the screen and assigns each a unique numeric ID:
-   - Buttons
-   - Icons
-   - Input fields
-   - Common Windows UI elements
-   - Custom app interfaces
-3. OCR can optionally extract readable text from the screenshot.
-4. YOLO overlays detected objects with their IDs on the screenshot.
-5. The LLM receives the screenshot (with IDs) instead of raw pixels. When the LLM needs to interact with a UI element, it references the object's ID.
-6. Using the ID, the executor can retrieve the exact coordinates from YOLO's output to perform actions precisely.
-
-Example structured JSON for reference:
+Expected output format:
 
 ```json
 {
   "objects": [
-    { "id": 1, "label": "button", "bbox": [x1, y1, x2, y2] },
-    { "id": 2, "label": "textbox", "bbox": [x1, y1, x2, y2] }
+    { "id": 1, "label": "button", "bbox": [120, 45, 200, 75] },
+    { "id": 2, "label": "input",  "bbox": [250, 45, 500, 75] }
   ],
   "texts": [
-    { "text": "Username", "bbox": [x1, y1, x2, y2] }
+    { "text": "Search", "bbox": [130, 50, 195, 70] }
   ]
 }
 ```
 
----
-
-### Benefits:
-
-## - 95%+ detection accuracy
-
-- deterministic element targeting
-
-- stable automation
-
-- less hallucination
-
-- consistent across resolutions
-
-## 🏗️ Architecture
-
-### Perceive → Reason → Act Loop
-
-    graph LR
-        A[User Request] --> B(Planner / LLM)
-        B --> C{Vision Layer}
-        C -->|Current: Raw Screenshot| B
-        C -->|Future: YOLO + OCR JSON| B
-        B -->|Decision| D[Executor]
-        D -->|Mouse/Keyboard| E[Windows OS]
-        E -->|Feedback Screenshot| C
+Benefits over raw screenshot: deterministic targeting, 95%+ detection accuracy, less hallucination, resolution-independent.
 
 ---
 
-### Components
+## Requirements
 
-#### **Planner**
+| Component | Requirement |
+|-----------|-------------|
+| OS | Windows 10 / 11 (64-bit) |
+| Python | 3.13+ |
+| GPU | NVIDIA ≥ 8GB VRAM (recommended) |
+| RAM | 16GB minimum |
+| Ollama | Gemma 3 12B pulled locally |
+| CPU-only | Supported, but noticeably slower |
 
-## - Interprets user intent
+> Tesseract OCR and a YOLO model are only required once the planned vision parser is integrated.
 
-- Uses past steps
+---
 
-- Chooses next high-level command
-
-#### **Vision Parser**
-
-## - **Current:** No parsing — the LLM sees the raw screenshot
-
-- **Future:** YOLO + OCR + object IDs + structured UI map
-
-#### **Executor**
-
-## Uses:
-
-- pywinauto
-
-- pyautogui
-
-- send2trash
-
-## ⚠️ Compatibility & Requirements
-
-### OS
-
-## - Windows 10 / 11 (64-bit)
-
-### Hardware
-
-## - NVIDIA GPU ≥ 8GB VRAM recommended
-
-- 16GB RAM minimum
-
-- CPU-only works, but slower
-
-### Software
-
-## - Python 3.10+
-
-- Ollama (Gemma 3 12B)
-
-- Tesseract OCR (only needed in the future pipeline)
-
-- YOLO model (future vision parser)
-
-## 🚀 Installation
-
-### 1. Clone Repository
+## Installation
 
 ```bash
+# Clone
+git clone https://github.com/yourusername/screen-agent.git
+cd screen-agent
 
-    git clone https://github.com/loverveysel/windows-os-agent.git
-    cd windows-os-agent
+# Create virtual environment
+python -m venv venv
+venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Pull the LLM
+ollama pull gemma3:12b
 ```
 
 ---
 
-### 2. Create Virtual Environment
-
-```bash
-    python -m venv venv
-    venv\Scripts\activate
-```
-
----
-
-### 3. Install Dependencies
-
-```bash
- pip install -r requirements.txt
-```
-
-### 4. Pull the LLM Model
-
-```bash
-ollama pull gemma3:12b\*\*\*
-```
-
-## 🎮 Usage
-
-### Start the Agent
+## Usage
 
 ```bash
 python mainwindow.py
 ```
 
-### Example Requests
+Example prompts:
 
-## - “Open Notepad and write ‘Hello World’.”
+```
+Open Notepad and write "Hello World".
+Open Chrome, search for GitHub, and click the first result.
+Open Task Manager and sort processes by CPU usage.
+```
 
-## - “Open Chrome, search GitHub, and click the first result.”The LLM interprets the screenshot and determines the appropriate UI coordinates.
+---
 
-## ⚙️ Configuration
+## Configuration
 
-    configs/agent.yaml
+Edit `configs/agent.yaml` to adjust:
 
-## - LLM parameters
+```yaml
+model: gemma3:12b
+temperature: 0.2
+system: "You are a computer agent..."
+```
 
-- temperature
+---
 
-- model selection
+## Roadmap
 
-- SYSTEM
+- [x] Raw screenshot → LLM → action loop
+- [x] PyQt5 real-time observation UI
+- [ ] YOLOv11 vision parser integration
+- [ ] Object ID → bounding box executor system
+- [ ] OCR text extraction layer
+- [ ] Memory summarization across steps
+- [ ] 4-bit quantization (target: ~2s/step latency)
+- [ ] Linux support
 
-## 🗺️ Roadmap
+---
 
-## - [ ] **Integrate YOLOv11 Vision Parser**
+## Tech Stack
 
-- [ ] **Generate numbered object maps**
+- **Python 3.13**
+- **Ollama** — local LLM inference
+- **Gemma 3 12B** — vision + reasoning
+- **pyautogui** — mouse/keyboard control
+- **pywinauto** — Windows UI automation
+- **PyQt5** — observation interface
+- **YOLOv11** *(planned)* — UI element detection
+- **Tesseract OCR** *(planned)* — text extraction
 
-- [ ] **LLM → object_id → bounding box system**
+---
 
-- [ ] **Memory Summarization**
+## License
 
-- [ ] **4-bit quantization for 2s-per-step latency**
-
-- [ ] **Linux Support\*\*\***
-
-## 📜 License
-
-#### MIT License. See `LICENSE`.**Developer:** Alper Can Özer
+MIT License. See [`LICENSE`](LICENSE) for details.
