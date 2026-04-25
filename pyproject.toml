@@ -1,8 +1,8 @@
 [tool.poetry]
-name = "windows-os-agent"
+name = "screen-agent"
 version = "0.1.0"
 description = "A Windows OS Agent with a Planner-Executor architecture for securely executing JSON commands."
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Alper Can Özer"]
 license = "MIT"
 
 [tool.poetry.dependencies]
