@@ -1,78 +1,70 @@
-# policy/policy_rules.py
+"""
+Security Policy module for path and executable validation.
+
+This module provides utility functions to ensure that the agent only
+operates within a secure base directory and only interacts with
+whitelisted applications.
+"""
 import os
 from typing import List
 
-#
-# --- 1. GÜVENLİ KÖK DİZİN ---
-# Ajanın dokunabileceği tek yer.
-# 'os.path.expanduser('~')' -> 'C:\Users\[SeninAdin]'
-# Bu, ajanın C:\Windows veya C:\Program Files gibi yerlere dokunmasını engeller.
-#
-# (Bunu bir config.py dosyasından da okuyabilirsin, ama varsayılan olarak
-# kullanıcının kendi 'home' dizinini kullanmak en güvenlisidir.)
-#
+# --- SECURE BASE PATH ---
+# The primary directory where the agent is allowed to perform operations.
+# Defaults to the user's home directory to prevent access to system folders like C:\Windows.
 ALLOWED_BASE_PATH = os.path.abspath(os.path.expanduser('~'))
 
 
 def is_path_safe(path: str, base_path: str = ALLOWED_BASE_PATH) -> bool:
-    """
-    Bir yolun (path), güvenli 'base_path' içinde olup olmadığını KESİN olarak kontrol eder.
-    '../' (Path Traversal) saldırılarına karşı korumalıdır.
+    """Checks if a given path is within the secure base directory.
+
+    This function protects against Path Traversal attacks (e.g., using '../')
+    by normalizing the path and verifying its common root with the base path.
+
+    Args:
+        path: The file or directory path to check.
+        base_path: The root directory that the path must reside within.
+
+    Returns:
+        bool: True if the path is safe, False otherwise.
     """
     
-    # 1. Adım: Yolu normalize et (örn: '~' veya '..' karakterlerini çöz)
-    # LLM'in gönderdiği: "~\..\..\Windows\System32"
-    # normalized_path: "C:\Windows\System32"
+    # 1. Normalize the path (resolving '~' and '..')
     try:
-        # _resolve_path (tools.py'deki helper) burada da kullanılabilir veya
-        # aynı mantık burada tekrarlanabilir:
         if not path:
             return False
         normalized_path = os.path.abspath(os.path.expanduser(path))
     except Exception:
-        # Bozuk veya geçersiz bir yol (örn: null byte)
+        # Invalid path (e.g., contains null bytes)
         return False
 
-    # 2. Adım: Güvenlik Kontrolü (Path Traversal Koruması)
-    #
-    # YANLIŞ YÖNTEM (Güvensiz):
-    # if normalized_path.startswith(base_path): ...
-    # Bu, "C:\Users\Admin-Sahte" yolunun "C:\Users\Admin" ile başladığını sanır.
-    #
-    # DOĞRU YÖNTEM (Güvenli):
-    # 'commonpath', iki yolun en derin ortak klasörünü bulur.
-    # Eğer bu ortak klasör, 'base_path'ın kendisi DEĞİLSE,
-    # bu, 'normalized_path'ın 'base_path'ın DIŞINDA olduğu anlamına gelir.
-    #
-    # Örnek:
-    # path = "C:\Windows"
-    # base_path = "C:\Users\Admin"
-    # commonpath = "C:\"  -> (base_path ile aynı değil) -> GÜVENSİZ
-    #
-    # path = "C:\Users\Admin\Documents"
-    # base_path = "C:\Users\Admin"
-    # commonpath = "C:\Users\Admin" -> (base_path ile aynı) -> GÜVENLİ
-    
-    
-    
+    # 2. Security Check (Path Traversal Protection)
+    # Using os.path.commonpath to ensure the normalized path is actually under base_path.
+    # A simple string startswith check is insufficient as it can be spoofed.
     try:
         common = os.path.commonpath([normalized_path, base_path])
     except ValueError:
-        # Yollar farklı sürücülerdeyse (C: vs D:)
+        # Occurs if paths are on different drives (e.g., C: vs D:)
         return False
         
     return os.path.normpath(common) == os.path.normpath(base_path)
 
 
 def is_executable_allowed(app_name: str, whitelist: List[str]) -> bool:
-    """
-    Bir uygulamanın, 'Executor'ın statik beyaz listesinde olup olmadığını kontrol eder.
-    (Case-insensitive - Büyük/küçük harf duyarsız)
+    """Verifies if an application is present in the static whitelist.
+
+    The check is case-insensitive and only considers the base filename of the application.
+
+    Args:
+        app_name: The name or path of the application to check.
+        whitelist: A list of allowed application names.
+
+    Returns:
+        bool: True if the application is whitelisted, False otherwise.
     """
     if not app_name:
         return False
         
-    # 'notepad.exe' veya 'NOTEPAD.EXE' gibi isimleri kontrol et
+    # Extract basename and convert to lowercase for comparison
     app_basename = os.path.basename(app_name).lower()
     
     for allowed_app in whitelist:

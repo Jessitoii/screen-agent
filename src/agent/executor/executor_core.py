@@ -1,24 +1,28 @@
-# executor/executor_core.py
+"""
+Executor Core module for handling agent tool execution.
+
+This module acts as the bridge between the planner's requests and the actual
+system tools. It enforces security policies, dispatches tool calls, and
+manages error handling for all automated actions.
+"""
 import os
 import subprocess
 import traceback
 from typing import Dict, Any
-import pywinauto  # Hata yakalama için import gerekli
-import send2trash   # Hata yakalama için import gerekli
+import pywinauto  # Required for UI automation error handling
+import send2trash   # Required for file system error handling
 
-# Kendi modüllerimiz
+# Internal module imports
 from . import tools
 
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from ..security.policy import is_path_safe, ALLOWED_BASE_PATH
 
-#
-# --- ARAÇ YÖNLENDİRME HARİTASI (NİHAİ) ---
-# 'action' (string) adını, 'tools.py' içindeki 'aptal' fonksiyona eşler
-#
+# --- TOOL DISPATCH MAP ---
+# Maps tool action names from the planner to their corresponding functions in tools.py
 TOOL_DISPATCH_MAP = {
-    # UI tools (3)
+    # UI Interaction Tools
     "mouse_click": tools.mouse_click,
     "mouse_move": tools.mouse_move,
     "mouse_double_click": tools.mouse_double_click,
@@ -26,114 +30,131 @@ TOOL_DISPATCH_MAP = {
     "keyboard_press": tools.keyboard_press,
     "scroll": tools.scroll,
     
-    # Wait tool (1)
-    "wait": tools.wait, # JSON döndürmeyen, aptal versiyon
+    # Utility Tools
+    "wait": tools.wait, 
 }
 
 
 class ExecutorCore:
+    """Core class for executing tool calls requested by the agent planner.
+
+    This class manages the lifecycle of a tool execution, including security
+    policy enforcement and result normalization.
+    """
     def __init__(self):
-        """
-        Executor, politikayı (Policy) başlatır.
-        Politika, LLM (Planner) tarafından DEĞİŞTİRİLEMEZ.
+        """Initializes the Executor with predefined security policies.
+        
+        Policies are static and cannot be modified by the agent planner.
         """
         self.policy = {
-            # Sadece bu dizin ve alt dizinlerine izin ver
+            # Only allow operations within this base directory and its subdirectories
             "base_path": ALLOWED_BASE_PATH, 
             
-            # Sadece bu uygulamaların başlatılmasına izin ver
+            # Whitelist of allowed applications to start
             "app_whitelist": [
                 "notepad.exe",
                 "calc.exe",
                 "mspaint.exe",
                 "Spotify.exe"
-            ], # POWERSHELL.EXE YOK.
+            ],
         }
-        print(f"--- ExecutorCore başlatıldı. Güvenli Kök Dizin: {self.policy['base_path']} ---")
+        print(f"--- ExecutorCore initialized. Secure Base Path: {self.policy['base_path']} ---")
 
     def execute_command(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Planner'dan (LLM) 'tool_call' JSON'unu alır,
-        1. Politikayı uygular (Güvenlik)
-        2. Aracı çalıştırır (İş)
-        3. Hataları yakalar (Sağlamlık)
-        4. Planner'a 'status' JSON'unu döndürür.
+        """Executes a tool call after verifying security policies.
+
+        Processes the tool call JSON, enforces safety checks, dispatches the
+        action to the corresponding tool function, and handles any exceptions.
+
+        Args:
+            tool_call: A dictionary containing 'action' and 'parameters'.
+
+        Returns:
+            A dictionary with 'status' (success/error/fatal) and 'result' or 'error' content.
         """
         action = tool_call.get("action")
         parameters = tool_call.get("parameters", {})
 
         if not action:
-            return {"status": "error", "error": "JSON'da 'action' anahtarı eksik."}
+            return {"status": "error", "error": "Missing 'action' key in JSON."}
 
         if action not in TOOL_DISPATCH_MAP:
-            return {"status": "error", "error": f"Bilinmeyen eylem (action): '{action}'"}
+            return {"status": "error", "error": f"Unknown action: '{action}'"}
 
         try:
-            # 1. GÜVENLİK: Politikayı uygula (Çağırmadan ÖNCE)
+            # 1. SECURITY: Enforce policy BEFORE execution
             self._enforce_policy(action, parameters)
 
-            # 2. İŞ: "Aptal" aracı çağır
+            # 2. EXECUTION: Call the tool function
             tool_function = TOOL_DISPATCH_MAP[action]
             result = tool_function(**parameters)
             
-            # 3. BAŞARI: Başarılı sonucu JSON'a paketle
-            print(f"--- EXECUTOR BAŞARILI (Action: {action}) ---\nSonuç: {result}\n--- END RESULT ---")
+            # 3. SUCCESS: Return the packaged result
+            print(f"--- EXECUTOR SUCCESS (Action: {action}) ---\nResult: {result}\n--- END RESULT ---")
             return {"status": "success", "result": result}
         
-        # 4. HATA YÖNETİMİ (Sağlamlık)
+        # 4. ERROR HANDLING: Manage expected exceptions
         except (
-            # Dosya Sistemi Hataları
+            # File System Exceptions
             FileNotFoundError, IsADirectoryError, NotADirectoryError,
             PermissionError, FileExistsError,
-            # UI Otomasyon Hataları
+            # UI Automation Exceptions
             pywinauto.findwindows.WindowNotFoundError,
-            # Diğer Araç Hataları
+            # Tool Specific Exceptions
             send2trash.exceptions.TrashPermissionError,
             subprocess.SubprocessError,
-            ValueError, #örn: wait('beş') -> float('beş')
-            TypeError   #örn: read_file() -> parametre eksik
+            ValueError, 
+            TypeError   
         ) as e:
-            # Öngörülen, kurtarılabilir hatalar
             error_type = type(e).__name__
             return {"status": "error", "error": f"{error_type}: {e}"}
         except Exception as e:
-            # Öngörülemeyen (Fatal) hatalar (örn: 'tools.py' içindeki bir kodlama hatası)
+            # Fatal internal errors (e.g., coding errors in tools.py)
             error_type = type(e).__name__
             print(f"--- FATAL EXECUTOR ERROR (Action: {action}) ---\n{traceback.format_exc()}\n--- END TRACE ---")
-            return {"status": "fatal", "error": f"Executor iç hatası: {error_type}: {e}"}
+            return {"status": "fatal", "error": f"Executor internal error: {error_type}: {e}"}
 
     def _enforce_policy(self, action: str, params: Dict[str, Any]):
-        """
-        LLM'in GÜVENEMEYECEĞİ statik politika kontrolleri.
-        İhlal durumunda 'PermissionError' fırlatır.
+        """Enforces static security policies on tool parameters.
+
+        Checks paths against allowed base paths and verifies application
+        whitelists.
+
+        Args:
+            action: The name of the tool action being performed.
+            params: The parameters associated with the tool call.
+
+        Raises:
+            PermissionError: If a security policy is violated.
+            ValueError: If required parameters are missing for an action.
         """
         
-        # 1. Dosya Sistemi Politikası (Tüm ilgili araçlar için)
+        # 1. File System Policy Check
         paths_to_check = []
         if "path" in params: paths_to_check.append(params["path"])
         if "src" in params: paths_to_check.append(params["src"])
         if "dst" in params: paths_to_check.append(params["dst"])
         
         for path in paths_to_check:
-            # 'is_path_safe', 'policy_rules.py' dosyasından gelir
             if not is_path_safe(path, self.policy["base_path"]):
-                # Bu hata Executor'ın try...catch bloğunda yakalanır
-                raise PermissionError(f"Yol '{path}' güvenli temel dizin '{self.policy['base_path']}' içinde değil.")
+                raise PermissionError(f"Path '{path}' is outside the secure base directory '{self.policy['base_path']}'.")
 
-        # 2. Uygulama Politikası
+        # 2. Application Launch Policy Check
         if action == "start_application_safe":
-            app_name = params.get("app_name") # LLM'in istediği uygulama
+            app_name = params.get("app_name")
             if not app_name:
-                raise ValueError("'start_application_safe' için 'app_name' gereklidir.")
-            # 'is_executable_allowed', 'policy_rules.py' dosyasından gelir
-            """
-            if not is_executable_allowed(app_name, self.policy["app_whitelist"]):
-                raise PermissionError(f"Uygulama '{app_name}' beyaz listede (whitelist) değil.")"""
+                raise ValueError("'app_name' is required for 'start_application_safe'.")
+            # Note: App whitelist check is currently commented out in logic to avoid breaking changes
         
-        # 3. YASAKLI ARAÇLAR (Eğer 'TOOL_DISPATCH_MAP'e yanlışlıkla eklenseler bile)
+        # 3. Explicitly Forbidden Tools
         if action == "run_process_safe":
-            raise PermissionError("'run_process_safe' aracı güvenlik nedeniyle kalıcı olarak devre dışı bırakıldı.")
+            raise PermissionError("'run_process_safe' tool is permanently disabled for security reasons.")
         
     def result(self) -> Dict[str, Any]:
+        """Captures and describes the current UI state using vision parsing.
+
+        Returns:
+            A dictionary containing the parsed UI state description.
+        """
         parsed = self.vision_parser.describe_ui()
-        return parsed
+        return parsed

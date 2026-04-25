@@ -1,3 +1,9 @@
+"""
+Orchestrator module for managing the agent's interaction loop.
+
+This module coordinates the planner and executor, handling the flow of user prompts,
+agent thoughts, tool executions, and final responses.
+"""
 import traceback
 from typing import Any, Dict, Generator
 
@@ -15,16 +21,24 @@ SUMMARIZER_PROMPT = "src/agent/planner/summarizer_prompt.txt"
 
 
 def run_orchestrator(prompt: str) -> Generator[Dict[str, Any], None, None]:
-    """
-    Generator-based orchestrator.
+    """Generator-based orchestrator that manages the agent interaction cycle.
 
-    Yields step dictionaries of the form:
-      {"type":"user_prompt", "content": prompt}
-      {"type":"thought", "content": <agent_thought_dict>}
-      {"type":"tool_result", "content": <executor_result_dict>}
-      {"type":"assistant", "content": <final_response_str>}
+    This function coordinates between the PlannerClient and ExecutorCore to process
+    a user prompt, execute necessary tools, and provide a final response. It is
+    designed to be run in a background thread to prevent GUI blocking.
 
-    This function is intended to be run in a background thread so it does not block the GUI.
+    Args:
+        prompt: The user's input string to be processed by the agent.
+
+    Yields:
+        Dictionaries representing different steps of the process:
+            - {"type": "user_prompt", "content": str}
+            - {"type": "thought", "content": dict}
+            - {"type": "tool_result", "content": dict}
+            - {"type": "assistant", "content": str}
+
+    Raises:
+        StopIteration: When the orchestration cycle completes.
     """
     planner = PlannerClient(REACT_PROMPT, SUMMARIZER_PROMPT)
     executor = ExecutorCore()
